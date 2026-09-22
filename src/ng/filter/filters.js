@@ -4,6 +4,28 @@ var MAX_DIGITS = 22;
 var DECIMAL_SEP = '.';
 var ZERO_CHAR = '0';
 
+// CVE-2022-25844 fix:
+// formatNumber() below builds its output by concatenating pattern.posPre /
+// posSuf / negPre / negSuf directly from $locale.NUMBER_FORMATS. These values
+// are locale data and were previously trusted with no length limit. A
+// malicious or misconfigured locale could set one of these fields to an
+// extremely long string (e.g. tens of millions of characters), and since the
+// currency/number filters run once per bound value, a single page with many
+// bound cells (e.g. an ng-repeat invoice table) could be made to freeze the
+// browser's main thread for many seconds.
+//
+// Real currency/number pattern affixes (e.g. '$', '¤', '-', '(', ')') are
+// always short. There is no legitimate locale where these fields need to be
+// longer than a small, fixed number of characters, so we clamp them here.
+var MAX_PATTERN_AFFIX_LENGTH = 100;
+
+function clampPatternAffix(value) {
+  if (typeof value === 'string' && value.length > MAX_PATTERN_AFFIX_LENGTH) {
+    return value.substring(0, MAX_PATTERN_AFFIX_LENGTH);
+  }
+  return value;
+}
+
 /**
  * @ngdoc filter
  * @name currency
@@ -348,10 +370,14 @@ function formatNumber(number, pattern, groupSep, decimalSep, fractionSize) {
       formattedText += 'e+' + exponent;
     }
   }
+  // CVE-2022-25844 fix: clamp the locale-supplied pattern affixes to a
+  // small, sane maximum length before using them, so that a malicious or
+  // misconfigured locale cannot force this function to build and return an
+  // arbitrarily large string on every call.
   if (number < 0 && !isZero) {
-    return pattern.negPre + formattedText + pattern.negSuf;
+    return clampPatternAffix(pattern.negPre) + formattedText + clampPatternAffix(pattern.negSuf);
   } else {
-    return pattern.posPre + formattedText + pattern.posSuf;
+    return clampPatternAffix(pattern.posPre) + formattedText + clampPatternAffix(pattern.posSuf);
   }
 }
 
