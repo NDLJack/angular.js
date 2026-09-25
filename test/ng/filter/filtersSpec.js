@@ -150,6 +150,141 @@ describe('filters', function() {
     });
   });
 
+  // CVE-2022-25844: currency/number filters previously concatenated
+  // locale-supplied posPre/posSuf/negPre/negSuf pattern affixes directly,
+  // with no length limit. A malicious/misconfigured locale could set one of
+  // these to an extremely long string, causing the filter to freeze the
+  // browser's main thread when run repeatedly (e.g. once per ng-repeat row).
+  // The fix clamps these values to MAX_PATTERN_AFFIX_LENGTH (100 chars)
+  // before they are used. These tests verify the vulnerable code path is
+  // now bounded and behaves correctly for both malicious and normal input.
+  describe('CVE-2022-25844 - pattern affix length clamping', function() {
+    var currency;
+
+    beforeEach(function() {
+      currency = filter('currency');
+    });
+
+    it('should clamp an extremely long posPre value instead of hanging/growing unbounded',
+      inject(function($locale) {
+        var pattern = $locale.NUMBER_FORMATS.PATTERNS[1];
+        var maliciousLength = 5000000; // 5 million characters - representative of the CVE payload
+        var originalPosPre = pattern.posPre;
+        var originalPosSuf = pattern.posSuf;
+        var originalNegPre = pattern.negPre;
+        var originalNegSuf = pattern.negSuf;
+
+        pattern.posPre = new Array(maliciousLength + 1).join('A');
+
+        var start = angular.isFunction(performance && performance.now)
+          ? performance.now()
+          : Date.now();
+        var result = currency(1.07, '$');
+        var elapsed = (angular.isFunction(performance && performance.now)
+          ? performance.now()
+          : Date.now()) - start;
+
+        // The malicious value must not appear at full length in the output -
+        // it should have been clamped to a small, bounded size.
+        expect(result.length).toBeLessThan(maliciousLength);
+
+        // A generous upper bound to catch any regression that removes/weakens
+        // the clamp, without being so tight it's flaky across environments.
+        expect(result.length).toBeLessThan(1000);
+
+        // Guards against a reintroduced unbounded-concatenation regression:
+        // formatting a single value should be fast, not proportional to a
+        // multi-million character locale field.
+        expect(elapsed).toBeLessThan(1000);
+
+        pattern.posPre = originalPosPre;
+        pattern.posSuf = originalPosSuf;
+        pattern.negPre = originalNegPre;
+        pattern.negSuf = originalNegSuf;
+      })
+    );
+
+    it('should clamp long posSuf/negPre/negSuf values the same way as posPre',
+      inject(function($locale) {
+        var pattern = $locale.NUMBER_FORMATS.PATTERNS[1];
+        var maliciousLength = 200000;
+        var original = {
+          posPre: pattern.posPre,
+          posSuf: pattern.posSuf,
+          negPre: pattern.negPre,
+          negSuf: pattern.negSuf
+        };
+
+        pattern.posSuf = new Array(maliciousLength + 1).join('B');
+        pattern.negPre = new Array(maliciousLength + 1).join('C');
+        pattern.negSuf = new Array(maliciousLength + 1).join('D');
+
+        var positiveResult = currency(1.07, '$');
+        var negativeResult = currency(-1.07, '$');
+
+        expect(positiveResult.length).toBeLessThan(maliciousLength);
+        expect(negativeResult.length).toBeLessThan(maliciousLength);
+
+        pattern.posPre = original.posPre;
+        pattern.posSuf = original.posSuf;
+        pattern.negPre = original.negPre;
+        pattern.negSuf = original.negSuf;
+      })
+    );
+
+    it('should not affect normal, realistically-sized pattern affixes',
+      inject(function($locale) {
+        var pattern = $locale.NUMBER_FORMATS.PATTERNS[1];
+        var original = {
+          posPre: pattern.posPre,
+          posSuf: pattern.posSuf,
+          negPre: pattern.negPre,
+          negSuf: pattern.negSuf
+        };
+
+        pattern.posPre = '¤';
+        pattern.posSuf = '';
+        pattern.negPre = '-¤';
+        pattern.negSuf = '';
+
+        expect(currency(1.07, '')).toBe('1.07');
+        expect(currency(-1.07, '')).toBe('-1.07');
+
+        pattern.posPre = original.posPre;
+        pattern.posSuf = original.posSuf;
+        pattern.negPre = original.negPre;
+        pattern.negSuf = original.negSuf;
+      })
+    );
+
+    it('should clamp an affix exactly at and just above the boundary correctly',
+      inject(function($locale) {
+        var pattern = $locale.NUMBER_FORMATS.PATTERNS[1];
+        var original = {
+          posPre: pattern.posPre,
+          posSuf: pattern.posSuf
+        };
+
+        // Exactly 100 chars - should pass through untouched.
+        var exactly100 = new Array(101).join('X');
+        pattern.posPre = exactly100;
+        pattern.posSuf = '';
+        var resultAt100 = currency(1, '');
+        expect(resultAt100.indexOf(exactly100)).toBe(0);
+
+        // 101 chars - should be clamped down to 100.
+        var oneOver = new Array(102).join('X');
+        pattern.posPre = oneOver;
+        var resultOver = currency(1, '');
+        expect(resultOver.indexOf(oneOver)).toBe(-1);
+        expect(resultOver.indexOf(exactly100)).toBe(0);
+
+        pattern.posPre = original.posPre;
+        pattern.posSuf = original.posSuf;
+      })
+    );
+  });
+
   describe('currency', function() {
     var currency;
 
